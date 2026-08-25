@@ -13,15 +13,16 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.api.routes.decisions import router as decisions_router
+from backend.app.api.routes.market_data import router as market_data_router
 
 app = FastAPI(
-    title="AURA Backend — Phase 1",
+    title="AURA Backend — Phase 2",
     description=(
-        "Decision, risk, and cost computation engine. "
-        "Market data is synthetic (SIMULATOR). "
+        "Decision, risk, cost computation, and canonical market data engine. "
+        "Persistent research data, instrument master, and dataset lineage. "
         "No live broker connections. No Angel One / Groww credentials."
     ),
-    version="1.0.0",
+    version="2.0.0",
 )
 
 # CORS — allow the Vite/TanStack frontend running on localhost
@@ -39,8 +40,15 @@ app.add_middleware(
 )
 
 app.include_router(decisions_router)
+app.include_router(market_data_router)
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "phase": 1, "dataSource": "SIMULATOR", "livePathSealed": True}
+    return {
+        "status": "ok",
+        "phase": 2,
+        "dataSource": "PERSISTENT_AND_SIMULATOR",
+        "livePathSealed": True,
+        "masterInstruments": 10,
+    }
