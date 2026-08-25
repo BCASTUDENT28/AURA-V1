@@ -25,7 +25,7 @@ STARTING_CASH = 1_000_000.0
 Action = Literal["BUY", "SELL", "HOLD", "SKIP"]
 InstrumentKind = Literal["index", "equity"]
 OrderSide = Literal["BUY", "SELL"]
-OrderStatus = Literal["PENDING", "FILLED", "REJECTED", "CANCELLED"]
+OrderStatus = Literal["PENDING", "OPEN", "FILLED", "REJECTED", "CANCELLED"]
 ProductType = Literal["INTRADAY", "DELIVERY"]
 
 RegimeLabel = Literal[
@@ -56,16 +56,16 @@ class Bar(BaseModel):
 class Quote(BaseModel):
     symbol: str
     ltp: float
-    bid: float
-    ask: float
-    open: float
-    high: float
-    low: float
-    prevClose: float
-    change: float
-    changePct: float
-    volume: float
-    ts: int
+    bid: float = 0.0
+    ask: float = 0.0
+    open: float = 0.0
+    high: float = 0.0
+    low: float = 0.0
+    prevClose: float = 0.0
+    change: float = 0.0
+    changePct: float = 0.0
+    volume: float = 0.0
+    ts: int = 0
 
 
 class Instrument(BaseModel):
@@ -252,12 +252,12 @@ class PaperPosition(BaseModel):
     qty: float
     avgPrice: float
     side: OrderSide
-    stop: Optional[float]
-    target: Optional[float]
-    openedTs: int
-    realized: float
-    costs: float
-    strategyId: Optional[str]
+    stop: Optional[float] = None
+    target: Optional[float] = None
+    openedTs: int = 0
+    realized: float = 0.0
+    costs: float = 0.0
+    strategyId: Optional[str] = None
 
 
 class PaperOrder(BaseModel):
@@ -268,13 +268,13 @@ class PaperOrder(BaseModel):
     type: Literal["LIMIT"]
     qty: float
     limitPrice: float
-    status: OrderStatus
-    fillPrice: Optional[float]
-    costs: Optional[CostBreakdown]
-    rejectReason: Optional[str]
-    strategyId: Optional[str]
-    stop: Optional[float]
-    target: Optional[float]
+    status: OrderStatus = "OPEN"
+    fillPrice: Optional[float] = None
+    costs: Optional[CostBreakdown] = None
+    rejectReason: Optional[str] = None
+    strategyId: Optional[str] = None
+    stop: Optional[float] = None
+    target: Optional[float] = None
 
 
 class PaperFill(BaseModel):
@@ -293,6 +293,7 @@ class PaperBook(BaseModel):
     realized: float = 0.0
     dailyPnl: float = 0.0
     sessionStartNav: float = STARTING_CASH
+    killSwitch: bool = False
     orders: list[PaperOrder] = []
     positions: list[PaperPosition] = []
     fills: list[PaperFill] = []

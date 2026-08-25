@@ -341,3 +341,9 @@ def seed_quotes(now: int) -> dict[str, Quote]:
             ts=now,
         )
     return out
+
+
+def quotes_now() -> dict[str, Quote]:
+    import time
+    return seed_quotes(int(time.time() * 1000))
+
