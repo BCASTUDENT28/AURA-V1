@@ -1,0 +1,38 @@
+{
+  "url": "http://127.0.0.1:8081/",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "AURA",
+      "hasCanvas": false,
+      "bodyTextLen": 2092,
+      "bodyTextHash": "2c820239a02820e727be31446a8bae467290822d10b8a2f0e326c111fa946965",
+      "bodyTextPrefix": "Skip to content AURA PAPER DESK PAPER SIMULATED NIFTY 24,862 -0.",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-built.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "AURA",
+      "hasCanvas": false,
+      "bodyTextLen": 1816,
+      "bodyTextHash": "0b7d9d0a717aa5a024d13dfc5ab9d8c3412f23b92e17d6ed7ace4d7d98d81662",
+      "bodyTextPrefix": "Skip to content AURA PAPER SIMULATED INTELLIGENCE OS Indian cash",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-built-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/app-builder-built.json",
+  "divergesFromBaseline": false,
+  "baselineReasons": []
+}
