@@ -19,17 +19,16 @@ from backend.app.api.routes.paper import router as paper_router
 from backend.app.api.routes.quant import router as quant_router
 from backend.app.api.routes.realtime import router as realtime_router
 from backend.app.api.routes.research import router as research_router
+from backend.app.api.routes.similarity import router as similarity_router
 
 app = FastAPI(
-    title="AURA Backend — Phase 7",
+    title="AURA Backend — Phase 8",
     description=(
-        "Decision, risk, cost computation, canonical market data, quant feature engine, "
-        "institutional Backtesting Lab, persistent Paper Trading Engine, "
-        "Real-Time WebSocket Streaming Gateway, and ML Architecture with "
-        "Regime Probability Models, Directional Signal Model, Platt/Isotonic Calibration, "
-        "and Feature Drift Monitoring."
+        "Full quant stack: Market Data · Feature Engine · Backtesting · Paper Trading · "
+        "Real-Time Gateway · ML Architecture (Regime + Direction + Calibration + Drift) · "
+        "Similarity & Evidence Memory (Vector Store + Pattern Library)."
     ),
-    version="7.0.0",
+    version="8.0.0",
 )
 
 # CORS — allow the Vite/TanStack frontend running on localhost
@@ -53,13 +52,14 @@ app.include_router(research_router)
 app.include_router(paper_router)
 app.include_router(realtime_router)
 app.include_router(ml_router)
+app.include_router(similarity_router)
 
 
 @app.get("/health")
 def health():
     return {
         "status": "ok",
-        "phase": 7,
+        "phase": 8,
         "dataSource": "PERSISTENT_AND_SIMULATOR",
         "livePathSealed": True,
         "quantEngine": "ENABLED",
@@ -69,4 +69,6 @@ def health():
         "mlArchitecture": "ENABLED",
         "calibration": "PLATT+ISOTONIC",
         "driftMonitor": "PSI+ZSCORE+VARRATIO",
+        "evidenceMemory": "COSINE_SIMILARITY",
+        "patternLibrary": "8_PATTERNS",
     }
