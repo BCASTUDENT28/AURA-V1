@@ -14,20 +14,22 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.api.routes.decisions import router as decisions_router
 from backend.app.api.routes.market_data import router as market_data_router
+from backend.app.api.routes.ml import router as ml_router
 from backend.app.api.routes.paper import router as paper_router
 from backend.app.api.routes.quant import router as quant_router
 from backend.app.api.routes.realtime import router as realtime_router
 from backend.app.api.routes.research import router as research_router
 
 app = FastAPI(
-    title="AURA Backend — Phase 6",
+    title="AURA Backend — Phase 7",
     description=(
         "Decision, risk, cost computation, canonical market data, quant feature engine, "
         "institutional Backtesting Lab, persistent Paper Trading Engine, "
-        "and Real-Time WebSocket Streaming Gateway. "
-        "No live broker connections. No Angel One / Groww credentials."
+        "Real-Time WebSocket Streaming Gateway, and ML Architecture with "
+        "Regime Probability Models, Directional Signal Model, Platt/Isotonic Calibration, "
+        "and Feature Drift Monitoring."
     ),
-    version="6.0.0",
+    version="7.0.0",
 )
 
 # CORS — allow the Vite/TanStack frontend running on localhost
@@ -50,17 +52,21 @@ app.include_router(quant_router)
 app.include_router(research_router)
 app.include_router(paper_router)
 app.include_router(realtime_router)
+app.include_router(ml_router)
 
 
 @app.get("/health")
 def health():
     return {
         "status": "ok",
-        "phase": 6,
+        "phase": 7,
         "dataSource": "PERSISTENT_AND_SIMULATOR",
         "livePathSealed": True,
         "quantEngine": "ENABLED",
         "backtestingEngine": "ENABLED",
         "paperEngine": "ENABLED",
         "realtimeGateway": "ENABLED",
+        "mlArchitecture": "ENABLED",
+        "calibration": "PLATT+ISOTONIC",
+        "driftMonitor": "PSI+ZSCORE+VARRATIO",
     }
