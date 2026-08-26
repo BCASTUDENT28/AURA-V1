@@ -12,6 +12,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from backend.app.api.routes.broker import router as broker_router
 from backend.app.api.routes.decisions import router as decisions_router
 from backend.app.api.routes.market_data import router as market_data_router
 from backend.app.api.routes.ml import router as ml_router
@@ -22,13 +23,13 @@ from backend.app.api.routes.research import router as research_router
 from backend.app.api.routes.similarity import router as similarity_router
 
 app = FastAPI(
-    title="AURA Backend — Phase 8",
+    title="AURA Backend — Phase 9",
     description=(
         "Full quant stack: Market Data · Feature Engine · Backtesting · Paper Trading · "
-        "Real-Time Gateway · ML Architecture (Regime + Direction + Calibration + Drift) · "
-        "Similarity & Evidence Memory (Vector Store + Pattern Library)."
+        "Real-Time Gateway · ML Architecture · Evidence Memory · "
+        "OpenAlgo Broker Integration (paper-default, live-gated)."
     ),
-    version="8.0.0",
+    version="9.0.0",
 )
 
 # CORS — allow the Vite/TanStack frontend running on localhost
@@ -45,6 +46,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(broker_router)
 app.include_router(decisions_router)
 app.include_router(market_data_router)
 app.include_router(quant_router)
@@ -59,7 +61,7 @@ app.include_router(similarity_router)
 def health():
     return {
         "status": "ok",
-        "phase": 8,
+        "phase": 9,
         "dataSource": "PERSISTENT_AND_SIMULATOR",
         "livePathSealed": True,
         "quantEngine": "ENABLED",
@@ -71,4 +73,6 @@ def health():
         "driftMonitor": "PSI+ZSCORE+VARRATIO",
         "evidenceMemory": "COSINE_SIMILARITY",
         "patternLibrary": "8_PATTERNS",
+        "brokerIntegration": "OPENALGO_GATED",
+        "liveTrading": "DISABLED_BY_DEFAULT",
     }
