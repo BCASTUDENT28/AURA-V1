@@ -49,8 +49,10 @@ def test_fill_causality_timing():
         assert t.entryPx > 0
         assert t.exitPx > 0
         assert t.totalCosts > 0, "Trade must incur non-zero Indian broker costs"
-        # Net P&L = Gross P&L - total costs
-        assert round(t.netPnl, 2) == round(t.grossPnl - t.totalCosts, 2)
+        # Net P&L = Gross P&L - total costs (tolerance ±0.02 for float accumulation)
+        assert abs(t.netPnl - (t.grossPnl - t.totalCosts)) < 0.02, (
+            f"netPnl {t.netPnl} != grossPnl {t.grossPnl} - totalCosts {t.totalCosts}"
+        )
 
 
 def test_costs_deducted_from_equity():

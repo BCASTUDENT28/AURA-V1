@@ -3,25 +3,41 @@ backend/app/broker/order_router.py
 
 Order Router for AURA AI (Phase 9).
 
-Sits between the AURA decision engine and the broker client.
+Sits between AURA decision signals and the execution layer.
 Responsibilities:
-  1. Translate AURA-internal signals → OpenAlgo BrokerOrder payloads
-  2. Pre-submission risk validation (re-gate before any live order)
-  3. Route to Paper Book when env != LIVE (default safe path)
-  4. Audit log every order attempt (approved, rejected, or simulated)
-  5. Enforce quantity caps and symbol whitelist
+  1. Static validation — exchange, action, quantity, order type (both paths)
+  2. Risk gate — calls snapshot_risk() from engines.risk.risk BEFORE any order
+     is routed; rejects if canTrade is False. This enforces:
+       - Kill switch
+       - Daily loss circuit breaker (2% of STARTING_CASH)
+       - Portfolio exposure cap (80% NAV)
+       - Max simultaneous positions (5)
+       - Stale-data check (>5 s)
+       - 9 ops/sec throttle
+       - Static-IP check (for env=LIVE only)
+  3. Routing:
+       - env=PAPER  → routed through the real paper book (paper/book.py)
+         via place_paper_order(). This is the SAME matching engine used by
+         /api/paper/order — not a fake "SIMULATED" entry.
+       - env=LIVE   → routed to the OpenAlgo broker client.
+  4. Audit log — every attempt (approved or rejected) is recorded.
 
-Design Principles:
-  - Default = PAPER. Live = explicit opt-in.
-  - Every live order is risk-gated TWICE: once in AURA's risk engine,
-    once here as final check before the network call.
-  - Paper and live paths share the same audit schema for consistency.
+Single entry point for paper orders:
+  /api/broker/order (env=PAPER) internally calls the same book.py path as
+  /api/paper/order. Do NOT add a second paper-trading engine.
+
+LIVE trading is disabled by default:
+  - Requires AURA_LIVE_TRADING=1 in the environment.
+  - Requires staticIpOk=True on the request.
+  - Requires OPENALGO_API_KEY in the environment.
+  - AURA_LIVE_TRADING must NEVER be set until explicitly authorised.
 """
 
 from __future__ import annotations
 
-import time
 import os
+import time
+import uuid
 from typing import Optional
 
 from pydantic import BaseModel
@@ -32,6 +48,13 @@ from backend.app.broker.openalgo_client import (
     get_broker_client,
     BrokerDisabledError,
 )
+from backend.app.engines.risk.risk import snapshot_risk, DEFAULT_LIMITS
+from backend.app.schemas.types import (
+    STARTING_CASH,
+    PaperBook,
+    PaperPosition,
+    Quote,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -40,7 +63,7 @@ from backend.app.broker.openalgo_client import (
 
 class OrderRequest(BaseModel):
     symbol: str               # AURA canonical symbol
-    exchange: str = "NSE"     # NSE | NFO | BSE
+    exchange: str = "NSE"     # NSE | NFO | BSE | MCX
     action: str               # BUY | SELL
     quantity: int
     orderType: str = "MARKET" # MARKET | LIMIT | SL | SL-M
@@ -49,7 +72,7 @@ class OrderRequest(BaseModel):
     triggerPrice: float = 0.0
     strategyTag: str = "AURA"
     env: str = "PAPER"        # "PAPER" | "LIVE"
-    staticIpOk: bool = False  # Required True for LIVE
+    staticIpOk: bool = False  # Required True for env=LIVE
 
 
 class OrderAuditEntry(BaseModel):
@@ -60,11 +83,13 @@ class OrderAuditEntry(BaseModel):
     quantity: int
     orderType: str
     env: str
-    routedTo: str             # "PAPER" | "LIVE_BROKER" | "REJECTED"
+    routedTo: str             # "PAPER_BOOK" | "LIVE_BROKER" | "REJECTED"
     orderId: Optional[str]
-    status: str               # "SUBMITTED" | "REJECTED" | "SIMULATED"
+    status: str               # "SUBMITTED" | "REJECTED" | "PAPER_ACCEPTED"
     rejectionReason: Optional[str]
     latencyMs: Optional[float]
+    riskCanTrade: Optional[bool]      # snapshot_risk().canTrade result
+    riskBreaches: Optional[list[str]] # breaches from risk snapshot
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -86,12 +111,11 @@ def _append_audit(entry: OrderAuditEntry) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Validation
+# Static validation (pre-risk, no network)
 # ─────────────────────────────────────────────────────────────────────────────
 
-MAX_QUANTITY = 5000   # Hard cap per single order
+MAX_QUANTITY = 5000
 MIN_QUANTITY = 1
-
 VALID_ACTIONS = {"BUY", "SELL"}
 VALID_ORDER_TYPES = {"MARKET", "LIMIT", "SL", "SL-M"}
 VALID_PRODUCT_TYPES = {"MIS", "NRML", "CNC"}
@@ -118,21 +142,79 @@ def _validate_order(req: OrderRequest) -> Optional[str]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Risk gate — called for EVERY order, paper or live
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _run_risk_gate(req: OrderRequest, ops_window: list[int]) -> tuple[bool, list[str]]:
+    """
+    Call snapshot_risk() and return (canTrade, breaches).
+    Uses the live paper book state so kill switch, daily loss, exposure cap,
+    position count, stale-data, and ops-rate are all evaluated.
+
+    For env=PAPER: staticIpOk=False is NOT a breach (no broker attached).
+    For env=LIVE:  staticIpOk=False IS a breach → already caught in _validate_order,
+                   but snapshot_risk enforces it as a second gate.
+    """
+    from backend.app.paper.book import get_paper_store
+    from backend.app.data.simulator import quotes_now
+
+    store = get_paper_store()
+    book_state = store.get_state()
+    quotes = quotes_now()
+    now_ms = int(time.time() * 1000)
+    last_tick = store.last_tick
+
+    snap = snapshot_risk(
+        kill_switch=store.kill_switch,
+        book=book_state,
+        quotes=quotes,
+        now=now_ms,
+        last_tick=last_tick,
+        ops_window=ops_window,
+        static_ip_ok=req.staticIpOk,
+        env=req.env,
+    )
+    return snap.canTrade, snap.breaches
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Ops-rate window (shared mutable state)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_OPS_WINDOW: list[int] = []
+
+
+def _record_op(now_ms: int) -> None:
+    """Record an operation timestamp; trim entries older than 1 second."""
+    _OPS_WINDOW.append(now_ms)
+    cutoff = now_ms - 1000
+    while _OPS_WINDOW and _OPS_WINDOW[0] < cutoff:
+        _OPS_WINDOW.pop(0)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Router
 # ─────────────────────────────────────────────────────────────────────────────
 
-import uuid
-
-
 def route_order(req: OrderRequest) -> OrderAuditEntry:
     """
-    Route an order to either the paper book or live broker.
-    Always records an audit entry regardless of outcome.
+    Route an order to the paper book or live broker.
+
+    Execution sequence:
+      1. Static validation (_validate_order) — field/env/IP checks
+      2. Risk gate (snapshot_risk) — kill switch, daily loss, exposure,
+         position count, stale data, ops/sec throttle
+      3a. env=PAPER → place_paper_order() in book.py (real matching engine)
+      3b. env=LIVE  → OpenAlgo broker client (requires AURA_LIVE_TRADING=1)
+
+    An audit entry is written for every attempt regardless of outcome.
+    riskCanTrade and riskBreaches are always populated after the risk gate runs.
     """
     request_id = str(uuid.uuid4())[:12]
     t0 = time.monotonic()
+    now_ms = int(time.time() * 1000)
 
-    # Validate
+    # ── Step 1: Static validation ───────────────────────────────────────────
     rejection = _validate_order(req)
     if rejection:
         entry = OrderAuditEntry(
@@ -148,27 +230,58 @@ def route_order(req: OrderRequest) -> OrderAuditEntry:
             status="REJECTED",
             rejectionReason=rejection,
             latencyMs=None,
+            riskCanTrade=None,
+            riskBreaches=None,
         )
         _append_audit(entry)
         return entry
 
-    # LIVE path
-    if req.env == "LIVE":
-        try:
-            broker_order = BrokerOrder(
-                symbol=req.symbol,
-                exchange=req.exchange.upper(),
-                action=req.action.upper(),
-                quantity=req.quantity,
-                orderType=req.orderType.upper(),
-                productType=req.productType.upper(),
-                price=req.price,
-                triggerPrice=req.triggerPrice,
-                strategyTag=req.strategyTag,
-            )
-            client = get_broker_client()
-            resp: BrokerOrderResponse = client.place_order(broker_order)
-            latency_ms = round((time.monotonic() - t0) * 1000, 2)
+    # ── Step 2: Risk gate ────────────────────────────────────────────────────
+    can_trade, breaches = _run_risk_gate(req, list(_OPS_WINDOW))
+    if not can_trade:
+        entry = OrderAuditEntry(
+            requestId=request_id,
+            timestamp=time.time(),
+            symbol=req.symbol,
+            action=req.action,
+            quantity=req.quantity,
+            orderType=req.orderType,
+            env=req.env,
+            routedTo="REJECTED",
+            orderId=None,
+            status="REJECTED",
+            rejectionReason=f"Risk gate blocked: {'; '.join(breaches)}",
+            latencyMs=round((time.monotonic() - t0) * 1000, 2),
+            riskCanTrade=False,
+            riskBreaches=breaches,
+        )
+        _append_audit(entry)
+        return entry
+
+    # ── Step 3a: PAPER path — real book.py matching engine ──────────────────
+    if req.env == "PAPER":
+        from backend.app.paper.book import get_paper_store
+        from backend.app.schemas.types import OrderSide
+        store = get_paper_store()
+        side: OrderSide = "BUY" if req.action.upper() == "BUY" else "SELL"
+        # limit_price: use req.price if set, otherwise use current LTP from simulator
+        from backend.app.data.simulator import quotes_now as _qnow
+        _q = _qnow()
+        limit_price = req.price if req.price > 0 else (_q.get(req.symbol).ltp if req.symbol in _q else 0.0)
+
+        result = store.place_order(
+            symbol=req.symbol,
+            side=side,
+            qty=req.quantity,
+            limit_price=limit_price,
+            stop=None,     # stop not required at this layer; book enforces DEFAULT_LIMITS.stopRequired
+            target=None,
+            strategy_id=req.strategyTag,
+        )
+        _record_op(now_ms)
+        latency_ms = round((time.monotonic() - t0) * 1000, 2)
+
+        if not result.get("ok", False):
             entry = OrderAuditEntry(
                 requestId=request_id,
                 timestamp=time.time(),
@@ -176,30 +289,51 @@ def route_order(req: OrderRequest) -> OrderAuditEntry:
                 action=req.action,
                 quantity=req.quantity,
                 orderType=req.orderType,
-                env="LIVE",
-                routedTo="LIVE_BROKER",
-                orderId=resp.orderId,
-                status="SUBMITTED",
-                rejectionReason=None,
-                latencyMs=latency_ms,
-            )
-        except (BrokerDisabledError, Exception) as e:
-            entry = OrderAuditEntry(
-                requestId=request_id,
-                timestamp=time.time(),
-                symbol=req.symbol,
-                action=req.action,
-                quantity=req.quantity,
-                orderType=req.orderType,
-                env="LIVE",
+                env="PAPER",
                 routedTo="REJECTED",
                 orderId=None,
                 status="REJECTED",
-                rejectionReason=str(e),
-                latencyMs=None,
+                rejectionReason=result.get("message", "Paper book rejected order"),
+                latencyMs=latency_ms,
+                riskCanTrade=False,
+                riskBreaches=breaches,
             )
-    else:
-        # PAPER path — simulate accepted (actual matching happens in paper book)
+        else:
+            entry = OrderAuditEntry(
+                requestId=request_id,
+                timestamp=time.time(),
+                symbol=req.symbol,
+                action=req.action,
+                quantity=req.quantity,
+                orderType=req.orderType,
+                env="PAPER",
+                routedTo="PAPER_BOOK",
+                orderId=result.get("orderId"),
+                status="PAPER_ACCEPTED",
+                rejectionReason=None,
+                latencyMs=latency_ms,
+                riskCanTrade=True,
+                riskBreaches=breaches,  # empty — risk gate passed
+            )
+        _append_audit(entry)
+        return entry
+
+    # ── Step 3b: LIVE path — OpenAlgo broker ────────────────────────────────
+    try:
+        broker_order = BrokerOrder(
+            symbol=req.symbol,
+            exchange=req.exchange.upper(),
+            action=req.action.upper(),
+            quantity=req.quantity,
+            orderType=req.orderType.upper(),
+            productType=req.productType.upper(),
+            price=req.price,
+            triggerPrice=req.triggerPrice,
+            strategyTag=req.strategyTag,
+        )
+        client = get_broker_client()
+        resp: BrokerOrderResponse = client.place_order(broker_order)
+        _record_op(now_ms)
         latency_ms = round((time.monotonic() - t0) * 1000, 2)
         entry = OrderAuditEntry(
             requestId=request_id,
@@ -208,12 +342,31 @@ def route_order(req: OrderRequest) -> OrderAuditEntry:
             action=req.action,
             quantity=req.quantity,
             orderType=req.orderType,
-            env="PAPER",
-            routedTo="PAPER",
-            orderId=f"PAPER-{request_id}",
-            status="SIMULATED",
+            env="LIVE",
+            routedTo="LIVE_BROKER",
+            orderId=resp.orderId,
+            status="SUBMITTED",
             rejectionReason=None,
             latencyMs=latency_ms,
+            riskCanTrade=True,
+            riskBreaches=breaches,  # empty list (canTrade was True)
+        )
+    except (BrokerDisabledError, Exception) as e:
+        entry = OrderAuditEntry(
+            requestId=request_id,
+            timestamp=time.time(),
+            symbol=req.symbol,
+            action=req.action,
+            quantity=req.quantity,
+            orderType=req.orderType,
+            env="LIVE",
+            routedTo="REJECTED",
+            orderId=None,
+            status="REJECTED",
+            rejectionReason=str(e),
+            latencyMs=None,
+            riskCanTrade=True,  # risk passed; broker rejected
+            riskBreaches=breaches,
         )
 
     _append_audit(entry)
