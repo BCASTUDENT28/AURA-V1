@@ -22,7 +22,7 @@ STARTING_CASH = 1_000_000.0
 # Enums / Literals
 # ---------------------------------------------------------------------------
 
-Action = Literal["BUY", "SELL", "HOLD", "SKIP"]
+Action = Literal["BUY", "SELL", "HOLD", "SKIP", "NO_TRADE"]
 InstrumentKind = Literal["index", "equity"]
 OrderSide = Literal["BUY", "SELL"]
 OrderStatus = Literal["PENDING", "OPEN", "FILLED", "REJECTED", "CANCELLED"]
@@ -110,13 +110,39 @@ class Indicators(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class RegimeProbabilities(BaseModel):
+    """Probability distribution across all regime labels. Sums to 1.0."""
+    BULL_TREND: float = 0.0
+    BEAR_TREND: float = 0.0
+    RANGE: float = 0.0
+    BREAKOUT: float = 0.0
+    HIGH_VOL: float = 0.0
+    LOW_VOL: float = 0.0
+    MEAN_REVERT: float = 0.0
+    STRESS: float = 0.0
+
+    def as_dict(self) -> dict[str, float]:
+        return self.model_dump()
+
+    def top_label(self) -> str:
+        d = self.as_dict()
+        return max(d, key=lambda k: d[k])
+
+    def confidence(self) -> float:
+        """Confidence = probability of the top label."""
+        return max(self.as_dict().values())
+
+
 class Regime(BaseModel):
     label: RegimeLabel
+    probabilities: Optional[RegimeProbabilities] = None   # V2: full distribution
+    confidence: float = 1.0                                # V2: top-label probability
     adx: float
     realizedVol: float
     volPercentile: float
     trendStrength: float
     notes: str
+    modelVersion: str = "regime-rules-v1"
 
 
 # ---------------------------------------------------------------------------
@@ -128,13 +154,18 @@ class StrategyOutput(BaseModel):
     strategyId: str
     version: str
     action: Action
-    entry: Optional[float]
-    stop: Optional[float]
-    target: Optional[float]
+    entry: Optional[float] = None
+    stop: Optional[float] = None
+    target: Optional[float] = None
     confidence: float
     reason: str
     invalidation: str
-    metadata: dict
+    metadata: dict = {}
+    # V2 additions
+    expectedR: Optional[float] = None          # expected R-multiple from historical data
+    regimeFit: float = 1.0                     # regime compatibility score [0,1]
+    featureEvidence: list[str] = []            # human-readable feature reasons
+    strategyVersion: str = "v1"               # explicit versioning
 
 
 # ---------------------------------------------------------------------------
@@ -260,14 +291,20 @@ class PaperPosition(BaseModel):
     strategyId: Optional[str] = None
 
 
+PaperOrderType = Literal["MARKET", "LIMIT", "SL", "SL-M"]
+TimeInForce = Literal["DAY", "GTC", "IOC"]
+
+
 class PaperOrder(BaseModel):
     id: str
     ts: int
     symbol: str
     side: OrderSide
-    type: Literal["LIMIT"]
+    type: PaperOrderType = "LIMIT"             # V2: proper order type semantics
     qty: float
-    limitPrice: float
+    limitPrice: float = 0.0                   # Required for LIMIT/SL; ignored for MARKET
+    triggerPrice: Optional[float] = None       # Required for SL/SL-M
+    timeInForce: TimeInForce = "DAY"           # V2: order expiry
     status: OrderStatus = "OPEN"
     fillPrice: Optional[float] = None
     costs: Optional[CostBreakdown] = None
@@ -275,6 +312,7 @@ class PaperOrder(BaseModel):
     strategyId: Optional[str] = None
     stop: Optional[float] = None
     target: Optional[float] = None
+    slippageBps: Optional[float] = None        # Override default slippage
 
 
 class PaperFill(BaseModel):
@@ -286,6 +324,7 @@ class PaperFill(BaseModel):
     qty: float
     price: float
     costs: CostBreakdown
+    partial: bool = False                      # V2: True if partial fill
 
 
 class PaperBook(BaseModel):

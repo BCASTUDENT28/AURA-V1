@@ -92,18 +92,31 @@ class PaperBookStore:
         symbol: str,
         side: OrderSide,
         qty: int,
-        limit_price: float,
+        limit_price: float = 0.0,
         stop: Optional[float] = None,
         target: Optional[float] = None,
         strategy_id: Optional[str] = None,
+        order_type: str = "LIMIT",
+        trigger_price: Optional[float] = None,
+        time_in_force: str = "DAY",
+        slippage_bps: Optional[float] = None,
     ) -> dict[str, Any]:
         """
         Validate risk and place a paper order.
-        Matches immediately if limit crosses, otherwise adds to open order queue.
+
+        Supports all order types via PaperMatchingEngine.match_order():
+          MARKET — fills immediately at ask/bid + slippage
+          LIMIT   — queued until limit price crosses
+          SL      — stop-limit: triggers at triggerPrice then limits
+          SL-M    — stop-market: triggers at triggerPrice then markets
+
+        Risk checks:
+          1. snapshot_risk() gate (kill switch, daily loss, exposure, etc.)
+          2. stop required check (if DEFAULT_LIMITS.stopRequired)
         """
         now_ms = int(time.time() * 1000)
         quotes = quotes_now()
-        quote = quotes.get(symbol, Quote(symbol=symbol, ltp=limit_price))
+        quote = quotes.get(symbol, Quote(symbol=symbol, ltp=limit_price or 0))
         self.last_tick = now_ms
 
         # Record operation for 9 ops/sec throttle
@@ -125,28 +138,40 @@ class PaperBookStore:
             ts=now_ms,
             symbol=symbol,
             side=side,
-            type="LIMIT",
+            type=order_type,
             qty=qty,
             limitPrice=limit_price,
+            triggerPrice=trigger_price,
+            timeInForce=time_in_force,
             status="OPEN",
             strategyId=strategy_id,
             stop=stop,
             target=target,
+            slippageBps=slippage_bps,
         )
 
-        # 2. Attempt Match
-        fill = PaperMatchingEngine.match_limit_order(order, quote)
+        # Get avg volume for market impact calculation
+        avg_vol = getattr(quote, 'volume', 0.0) or 0.0
+
+        # 2. Attempt Match via unified dispatcher
+        fill = PaperMatchingEngine.match_order(
+            order, quote,
+            avg_volume=avg_vol,
+            slippage_bps=slippage_bps,
+        )
         if fill:
             self._apply_fill(fill, stop=stop, target=target)
             self.orders.append(order)
             self.fills.append(fill)
+            status = "PARTIALLY_FILLED" if fill.partial else "FILLED"
             return {
                 "ok": True,
                 "orderId": order.id,
-                "status": "FILLED",
+                "status": status,
                 "fillPrice": fill.price,
+                "fillQty": fill.qty,
                 "costs": fill.costs.total,
-                "message": f"Paper order {side} {qty} {symbol} filled @ {fill.price:.2f}",
+                "message": f"Paper {order_type} {side} {fill.qty}/{qty} {symbol} filled @ {fill.price:.2f}",
             }
         else:
             self.orders.append(order)
@@ -154,7 +179,7 @@ class PaperBookStore:
                 "ok": True,
                 "orderId": order.id,
                 "status": "OPEN",
-                "message": f"Paper limit order {side} {qty} {symbol} queued @ {limit_price:.2f}",
+                "message": f"Paper {order_type} order {side} {qty} {symbol} queued",
             }
 
     def cancel_order(self, order_id: str) -> bool:
@@ -185,10 +210,15 @@ class PaperBookStore:
         quotes = quotes or quotes_now()
         new_fills: list[PaperFill] = []
 
-        # 1. Match Open Limit Orders
+        # 1. Match Open Orders (all types)
         for o in self.orders:
             if o.status == "OPEN" and o.symbol in quotes:
-                fill = PaperMatchingEngine.match_limit_order(o, quotes[o.symbol])
+                avg_vol = getattr(quotes[o.symbol], 'volume', 0.0) or 0.0
+                fill = PaperMatchingEngine.match_order(
+                    o, quotes[o.symbol],
+                    avg_volume=avg_vol,
+                    slippage_bps=o.slippageBps,
+                )
                 if fill:
                     self._apply_fill(fill, stop=o.stop, target=o.target)
                     self.fills.append(fill)
